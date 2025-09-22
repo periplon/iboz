@@ -96,6 +96,15 @@ type DashboardResponse = {
     automationRate: number
     timeSavedMinutes: number
   }
+  focusSessions: Array<{
+    id: string
+    label: string
+    start: string
+    estimated: number
+    emails: number
+    llmSupport: boolean
+    description: string
+  }>
   queues: Array<{
     id: string
     label: string
@@ -126,16 +135,29 @@ type FocusPlanResponse = {
     streak: number
     goal: number
   }
+  controls: {
+    notificationsMuted: boolean
+    batchingEnabled: boolean
+    autoSummaries: boolean
+  }
 }
 
 type AutomationsResponse = {
+  overview: {
+    active: number
+    automationCoverage: number
+    avgTimeSaved: number
+  }
   templates: Array<{
     id: string
     name: string
     description: string
     trigger: string
+    conditions: string[]
     actions: string[]
     requiresApproval: boolean
+    owner: string
+    lastRun: string
   }>
 }
 

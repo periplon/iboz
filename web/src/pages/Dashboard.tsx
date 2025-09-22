@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { MetricCard } from '../components/MetricCard'
 import { QueueCard } from '../components/QueueCard'
 import { RecommendationCard } from '../components/RecommendationCard'
@@ -18,7 +19,7 @@ export function Dashboard() {
     return null
   }
 
-  const { summary, queues, recommendations } = data
+  const { summary, queues, recommendations, focusSessions } = data
 
   return (
     <div className="space-y-8">
@@ -59,6 +60,40 @@ export function Dashboard() {
         <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {queues.map((queue) => (
             <QueueCard key={queue.id} {...queue} />
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold text-slate-900">Focus runway</h2>
+          <Link
+            to="/focus"
+            className="text-sm font-semibold text-primary-600 transition hover:text-primary-500"
+          >
+            Open focus mode →
+          </Link>
+        </div>
+        <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {focusSessions.map((session) => (
+            <div key={session.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{session.start}</p>
+                  <h3 className="mt-1 text-lg font-semibold text-slate-900">{session.label}</h3>
+                  <p className="mt-1 text-sm text-slate-600">{session.description}</p>
+                </div>
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${session.llmSupport ? 'bg-primary-100 text-primary-700' : 'bg-slate-100 text-slate-500'}`}
+                >
+                  {session.llmSupport ? 'LLM assisted' : 'Rules first'}
+                </span>
+              </div>
+              <div className="mt-4 flex items-center justify-between text-sm text-slate-600">
+                <span>{session.emails} emails batched</span>
+                <span>{session.estimated} min planned</span>
+              </div>
+            </div>
           ))}
         </div>
       </section>
