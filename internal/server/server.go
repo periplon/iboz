@@ -14,6 +14,9 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/example/iboz/internal/api"
+	"github.com/example/iboz/internal/email"
+	"github.com/example/iboz/internal/email/adapter/memory"
+	"github.com/example/iboz/internal/email/adapter/synthetic"
 )
 
 //go:embed all:static
@@ -36,7 +39,10 @@ func New() *Server {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
-	api.Register(e.Group("/api"))
+	emailRepo := memory.NewRepository()
+	emailService := email.NewService(emailRepo, email.NewSHA256Hasher(), synthetic.NewGenerator(), email.NewSystemClock())
+
+	api.Register(e.Group("/api"), emailService)
 
 	subFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {

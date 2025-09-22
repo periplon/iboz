@@ -12,10 +12,17 @@ import (
 	"github.com/example/iboz/internal/email"
 )
 
-var emailService = email.NewService()
+type handler struct {
+	emailService email.ProviderService
+}
 
 // Register wires the API routes to the provided echo group.
-func Register(g *echo.Group) {
+func Register(g *echo.Group, emailService email.ProviderService) {
+	if emailService == nil {
+		panic("api: email service dependency is required")
+	}
+	h := handler{emailService: emailService}
+
 	g.GET("/health", healthHandler)
 	g.GET("/dashboard", dashboardHandler)
 	g.GET("/focus/plan", focusPlanHandler)
@@ -23,10 +30,10 @@ func Register(g *echo.Group) {
 	g.POST("/automations/test-run", automationTestRunHandler)
 
 	emailGroup := g.Group("/email")
-	emailGroup.GET("/provider", emailProviderStateHandler)
-	emailGroup.POST("/provider", emailProviderConfigureHandler)
-	emailGroup.POST("/provider/authenticate", emailProviderAuthenticateHandler)
-	emailGroup.GET("/messages", emailFetchMessagesHandler)
+	emailGroup.GET("/provider", h.emailProviderStateHandler)
+	emailGroup.POST("/provider", h.emailProviderConfigureHandler)
+	emailGroup.POST("/provider/authenticate", h.emailProviderAuthenticateHandler)
+	emailGroup.GET("/messages", h.emailFetchMessagesHandler)
 }
 
 func healthHandler(c echo.Context) error {
@@ -218,24 +225,24 @@ type emailMessagesResponse struct {
 	SyncedAt *string              `json:"syncedAt,omitempty"`
 }
 
-func emailProviderStateHandler(c echo.Context) error {
-	return respondWithEmailState(c, http.StatusOK)
+func (h handler) emailProviderStateHandler(c echo.Context) error {
+	return h.respondWithEmailState(c, http.StatusOK)
 }
 
-func emailProviderConfigureHandler(c echo.Context) error {
+func (h handler) emailProviderConfigureHandler(c echo.Context) error {
 	var cfg email.ProviderConfig
 	if err := c.Bind(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid configuration payload"})
 	}
 
-	if err := emailService.ConfigureProvider(cfg); err != nil {
+	if err := h.emailService.ConfigureProvider(c.Request().Context(), cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	return respondWithEmailState(c, http.StatusOK)
+	return h.respondWithEmailState(c, http.StatusOK)
 }
 
-func emailProviderAuthenticateHandler(c echo.Context) error {
+func (h handler) emailProviderAuthenticateHandler(c echo.Context) error {
 	var req emailAuthRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid authentication payload"})
@@ -255,7 +262,7 @@ func emailProviderAuthenticateHandler(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential secret is required"})
 	}
 
-	if _, err := emailService.Authenticate(email.AuthRequest{Method: req.Method, Username: req.Username, Secret: secret}); err != nil {
+	if _, err := h.emailService.Authenticate(c.Request().Context(), email.AuthRequest{Method: req.Method, Username: req.Username, Secret: secret}); err != nil {
 		status := http.StatusInternalServerError
 		switch {
 		case errors.Is(err, email.ErrProviderNotConfigured):
@@ -266,11 +273,11 @@ func emailProviderAuthenticateHandler(c echo.Context) error {
 		return c.JSON(status, map[string]string{"error": err.Error()})
 	}
 
-	return respondWithEmailState(c, http.StatusOK)
+	return h.respondWithEmailState(c, http.StatusOK)
 }
 
-func emailFetchMessagesHandler(c echo.Context) error {
-	messages, err := emailService.FetchEmails(c.Request().Context())
+func (h handler) emailFetchMessagesHandler(c echo.Context) error {
+	messages, err := h.emailService.FetchEmails(c.Request().Context())
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
@@ -282,7 +289,15 @@ func emailFetchMessagesHandler(c echo.Context) error {
 		return c.JSON(status, map[string]string{"error": err.Error()})
 	}
 
-	state := emailService.State()
+	state, err := h.emailService.State(c.Request().Context())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, context.Canceled) {
+			status = http.StatusRequestTimeout
+		}
+		return c.JSON(status, map[string]string{"error": err.Error()})
+	}
+
 	var syncedAt *string
 	if !state.LastSync.IsZero() {
 		formatted := state.LastSync.Format(time.RFC3339)
@@ -295,8 +310,16 @@ func emailFetchMessagesHandler(c echo.Context) error {
 	})
 }
 
-func respondWithEmailState(c echo.Context, status int) error {
-	state := emailService.State()
+func (h handler) respondWithEmailState(c echo.Context, status int) error {
+	state, err := h.emailService.State(c.Request().Context())
+	if err != nil {
+		httpStatus := http.StatusInternalServerError
+		if errors.Is(err, context.Canceled) {
+			httpStatus = http.StatusRequestTimeout
+		}
+		return c.JSON(httpStatus, map[string]string{"error": err.Error()})
+	}
+
 	var lastSync *string
 	if !state.LastSync.IsZero() {
 		formatted := state.LastSync.Format(time.RFC3339)
