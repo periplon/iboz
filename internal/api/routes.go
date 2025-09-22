@@ -31,6 +31,26 @@ func dashboardHandler(c echo.Context) error {
 			"automationRate":   0.68,
 			"timeSavedMinutes": 125,
 		},
+		"focusSessions": []map[string]interface{}{
+			{
+				"id":          "focus-urgent",
+				"label":       "Urgent action block",
+				"start":       "09:30",
+				"estimated":   45,
+				"emails":      4,
+				"llmSupport":  true,
+				"description": "Handle escalations with recommended replies and audit log links.",
+			},
+			{
+				"id":          "focus-followup",
+				"label":       "Delegated follow-ups",
+				"start":       "14:00",
+				"estimated":   30,
+				"emails":      6,
+				"llmSupport":  false,
+				"description": "Batch nudges on waiting approvals before end of day.",
+			},
+		},
 		"queues": []map[string]interface{}{
 			{
 				"id":          "urgent",
@@ -106,6 +126,11 @@ func focusPlanHandler(c echo.Context) error {
 			"streak":       4,
 			"goal":         3,
 		},
+		"controls": map[string]interface{}{
+			"notificationsMuted": true,
+			"batchingEnabled":    true,
+			"autoSummaries":      true,
+		},
 	}
 
 	return c.JSON(http.StatusOK, payload)
@@ -113,30 +138,47 @@ func focusPlanHandler(c echo.Context) error {
 
 func automationsHandler(c echo.Context) error {
 	payload := map[string]interface{}{
+		"overview": map[string]interface{}{
+			"active":             12,
+			"automationCoverage": 0.74,
+			"avgTimeSaved":       32,
+		},
 		"templates": []map[string]interface{}{
 			{
 				"id":          "auto-ack",
 				"name":        "Auto-acknowledge support tickets",
 				"description": "Send branded receipt, create Jira issue, and assign to support queue.",
 				"trigger":     "sender: support@customer.com",
+				"conditions": []string{
+					"subject CONTAINS 'case #'",
+					"attachment.type = 'pdf'",
+				},
 				"actions": []string{
 					"Send template response",
 					"Create Jira ticket",
 					"Label as Waiting",
 				},
 				"requiresApproval": true,
+				"owner":            "Support Operations",
+				"lastRun":          "2025-03-18T10:24:00Z",
 			},
 			{
 				"id":          "vip-sms",
 				"name":        "VIP Escalation to Slack",
 				"description": "If VIP contacts after hours, alert on-call channel and schedule morning follow-up.",
 				"trigger":     "tag:vip AND time:after_hours",
+				"conditions": []string{
+					"sender IN vip_list",
+					"llm.confidence >= 0.65",
+				},
 				"actions": []string{
 					"Post to #escalations channel",
 					"Create Asana task",
 					"Snooze email until 8am",
 				},
 				"requiresApproval": false,
+				"owner":            "Customer Experience",
+				"lastRun":          "2025-03-18T07:10:00Z",
 			},
 		},
 	}

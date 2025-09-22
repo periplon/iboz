@@ -107,6 +107,11 @@ func TestDashboardHandler(t *testing.T) {
 	if !ok || len(recommendations) != 2 {
 		t.Fatalf("expected two recommendations, got %v", resp["recommendations"])
 	}
+
+	focusSessions, ok := resp["focusSessions"].([]any)
+	if !ok || len(focusSessions) != 2 {
+		t.Fatalf("expected two focus sessions, got %v", resp["focusSessions"])
+	}
 }
 
 func TestFocusPlanHandler(t *testing.T) {
@@ -135,6 +140,11 @@ func TestFocusPlanHandler(t *testing.T) {
 	if !ok || len(metrics) == 0 {
 		t.Fatalf("metrics missing or empty: %v", resp["metrics"])
 	}
+
+	controls, ok := resp["controls"].(map[string]any)
+	if !ok || len(controls) == 0 {
+		t.Fatalf("controls missing or empty: %v", resp["controls"])
+	}
 }
 
 func TestAutomationsHandler(t *testing.T) {
@@ -153,6 +163,10 @@ func TestAutomationsHandler(t *testing.T) {
 	templates, ok := resp["templates"].([]any)
 	if !ok || len(templates) != 2 {
 		t.Fatalf("expected two templates, got %v", resp["templates"])
+	}
+
+	if _, ok := resp["overview"].(map[string]any); !ok {
+		t.Fatalf("overview missing: %v", resp)
 	}
 }
 
