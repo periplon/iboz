@@ -4,11 +4,13 @@ import { FocusMode } from './pages/FocusMode'
 import { Automations } from './pages/Automations'
 import { Analytics } from './pages/Analytics'
 import { Admin } from './pages/Admin'
+import { EmailSettings } from './pages/EmailSettings'
 
 const navigation = [
   { name: 'Dashboard', to: '/' },
   { name: 'Focus Mode', to: '/focus' },
   { name: 'Automations', to: '/automations' },
+  { name: 'Email Integrations', to: '/email' },
   { name: 'Analytics', to: '/analytics' },
   { name: 'Admin', to: '/admin' },
 ]
@@ -62,6 +64,7 @@ export default function App() {
                 <Route index element={<Dashboard />} />
                 <Route path="focus" element={<FocusMode />} />
                 <Route path="automations" element={<Automations />} />
+                <Route path="email" element={<EmailSettings />} />
                 <Route path="analytics" element={<Analytics />} />
                 <Route path="admin" element={<Admin />} />
               </Route>

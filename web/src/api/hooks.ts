@@ -89,6 +89,35 @@ export function useAutomationTestRunner() {
   )
 }
 
+export function useEmailProvider() {
+  return useApi<EmailProviderState>('/api/email/provider')
+}
+
+export function updateEmailProvider(config: EmailProviderConfig) {
+  return fetchJSON<EmailProviderState>('/api/email/provider', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  })
+}
+
+export type EmailAuthenticatePayload = {
+  method: EmailAuthMethod
+  username: string
+  appPassword?: string
+  oauthToken?: string
+}
+
+export function authenticateEmailProvider(payload: EmailAuthenticatePayload) {
+  return fetchJSON<EmailProviderState>('/api/email/provider/authenticate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchEmailMessages() {
+  return fetchJSON<EmailMessagesResponse>('/api/email/messages')
+}
+
 type DashboardResponse = {
   summary: {
     inboxZeroTarget: number
@@ -170,4 +199,55 @@ type AutomationTestResponse = {
     requiresApproval: boolean
     confidence: number
   }
+}
+
+export type EmailProviderState = {
+  config?: EmailProviderConfig
+  auth?: EmailAuthState
+  lastSync?: string
+  messagesFetched: number
+}
+
+export type EmailProviderConfig = {
+  provider: EmailProviderType
+  displayName: string
+  connection: EmailConnectionSettings
+  syncWindowHours: number
+  labelFilters: string[]
+}
+
+export type EmailProviderType = 'gmail' | 'outlook' | 'imap'
+
+export type EmailConnectionSettings = {
+  protocol: EmailConnectionProtocol
+  host?: string
+  port?: number
+  useTls?: boolean
+  apiBaseUrl?: string
+}
+
+export type EmailConnectionProtocol = 'api' | 'imap'
+
+export type EmailAuthState = {
+  method: EmailAuthMethod
+  username?: string
+  status: string
+  updatedAt: string
+}
+
+export type EmailAuthMethod = 'oauth' | 'appPassword'
+
+export type EmailMessagesResponse = {
+  messages: EmailMessage[]
+  syncedAt?: string
+}
+
+export type EmailMessage = {
+  id: string
+  subject: string
+  sender: string
+  receivedAt: string
+  snippet: string
+  labels: string[]
+  importance: string
 }

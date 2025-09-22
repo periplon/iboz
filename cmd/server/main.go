@@ -60,5 +60,11 @@ func run(factory func() applicationServer, notifier func(chan<- os.Signal), time
 		return err
 	}
 
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
