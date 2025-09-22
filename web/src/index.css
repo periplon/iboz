@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background-color: #f5f7fb;
+  color: #1f2933;
+}
+
+a {
+  font-weight: 500;
+  color: theme('colors.primary.600');
+}
+
+a:hover {
+  color: theme('colors.primary.500');
+}
