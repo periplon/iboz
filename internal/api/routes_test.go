@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/example/iboz/internal/email"
 )
 
 func TestRegisterRegistersExpectedRoutes(t *testing.T) {
@@ -16,11 +18,15 @@ func TestRegisterRegistersExpectedRoutes(t *testing.T) {
 	Register(e.Group("/api"))
 
 	expected := map[string]bool{
-		http.MethodGet + "/api/health":                true,
-		http.MethodGet + "/api/dashboard":             true,
-		http.MethodGet + "/api/focus/plan":            true,
-		http.MethodGet + "/api/automations":           true,
-		http.MethodPost + "/api/automations/test-run": true,
+		http.MethodGet + "/api/health":                       true,
+		http.MethodGet + "/api/dashboard":                    true,
+		http.MethodGet + "/api/focus/plan":                   true,
+		http.MethodGet + "/api/automations":                  true,
+		http.MethodPost + "/api/automations/test-run":        true,
+		http.MethodGet + "/api/email/provider":               true,
+		http.MethodPost + "/api/email/provider":              true,
+		http.MethodPost + "/api/email/provider/authenticate": true,
+		http.MethodGet + "/api/email/messages":               true,
 	}
 
 	for _, route := range e.Routes() {
@@ -235,5 +241,117 @@ func TestAutomationTestRunHandlerMissingTemplateID(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected bad request status, got %d", rec.Code)
+	}
+}
+
+func TestEmailProviderHandlers(t *testing.T) {
+	emailService = email.NewService()
+
+	ctx, rec := newContext(http.MethodGet, "/api/email/provider", nil)
+	if err := emailProviderStateHandler(ctx); err != nil {
+		t.Fatalf("email state handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	state := decodeBody[emailProviderStateResponse](t, rec)
+	if state.MessagesFetched != 0 {
+		t.Fatalf("expected zero fetched messages, got %d", state.MessagesFetched)
+	}
+
+	cfg := map[string]any{
+		"provider":    "gmail",
+		"displayName": "Pilot Inbox",
+		"connection": map[string]any{
+			"protocol": "api",
+		},
+		"syncWindowHours": 48,
+		"labelFilters":    []string{"Urgent", "Automation"},
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+
+	ctx, rec = newContext(http.MethodPost, "/api/email/provider", bytes.NewBuffer(body))
+	if err := emailProviderConfigureHandler(ctx); err != nil {
+		t.Fatalf("configure handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	state = decodeBody[emailProviderStateResponse](t, rec)
+	if state.Config == nil || state.Config.DisplayName != "Pilot Inbox" {
+		t.Fatalf("unexpected config state: %+v", state.Config)
+	}
+
+	authPayload := map[string]any{
+		"method":      "appPassword",
+		"username":    "pilot@example.com",
+		"appPassword": "supersafesecret",
+	}
+	body, err = json.Marshal(authPayload)
+	if err != nil {
+		t.Fatalf("marshal auth: %v", err)
+	}
+
+	ctx, rec = newContext(http.MethodPost, "/api/email/provider/authenticate", bytes.NewBuffer(body))
+	if err := emailProviderAuthenticateHandler(ctx); err != nil {
+		t.Fatalf("authenticate handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	state = decodeBody[emailProviderStateResponse](t, rec)
+	if state.Auth == nil || state.Auth.Status != "connected" {
+		t.Fatalf("authentication state missing or incorrect: %+v", state.Auth)
+	}
+
+	ctx, rec = newContext(http.MethodGet, "/api/email/messages", nil)
+	if err := emailFetchMessagesHandler(ctx); err != nil {
+		t.Fatalf("fetch messages handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	messages := decodeBody[emailMessagesResponse](t, rec)
+	if len(messages.Messages) == 0 {
+		t.Fatalf("expected synthesized messages")
+	}
+	if messages.SyncedAt == nil {
+		t.Fatalf("expected synced timestamp")
+	}
+}
+
+func TestEmailProviderAuthenticateRequiresSecret(t *testing.T) {
+	emailService = email.NewService()
+
+	if err := emailService.ConfigureProvider(email.ProviderConfig{
+		Provider:    email.ProviderGmail,
+		DisplayName: "Ops",
+		Connection:  email.ConnectionSettings{Protocol: email.ProtocolAPI},
+	}); err != nil {
+		t.Fatalf("configure provider: %v", err)
+	}
+
+	payload := map[string]any{
+		"method":   "oauth",
+		"username": "ops@example.com",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	ctx, rec := newContext(http.MethodPost, "/api/email/provider/authenticate", bytes.NewBuffer(body))
+	if err := emailProviderAuthenticateHandler(ctx); err != nil {
+		t.Fatalf("authenticate handler error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d", rec.Code)
 	}
 }

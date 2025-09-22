@@ -1,11 +1,18 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/example/iboz/internal/email"
 )
+
+var emailService = email.NewService()
 
 // Register wires the API routes to the provided echo group.
 func Register(g *echo.Group) {
@@ -14,6 +21,12 @@ func Register(g *echo.Group) {
 	g.GET("/focus/plan", focusPlanHandler)
 	g.GET("/automations", automationsHandler)
 	g.POST("/automations/test-run", automationTestRunHandler)
+
+	emailGroup := g.Group("/email")
+	emailGroup.GET("/provider", emailProviderStateHandler)
+	emailGroup.POST("/provider", emailProviderConfigureHandler)
+	emailGroup.POST("/provider/authenticate", emailProviderAuthenticateHandler)
+	emailGroup.GET("/messages", emailFetchMessagesHandler)
 }
 
 func healthHandler(c echo.Context) error {
@@ -184,6 +197,118 @@ func automationsHandler(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, payload)
+}
+
+type emailProviderStateResponse struct {
+	Config          *email.ProviderConfig `json:"config,omitempty"`
+	Auth            *email.AuthState      `json:"auth,omitempty"`
+	LastSync        *string               `json:"lastSync,omitempty"`
+	MessagesFetched int                   `json:"messagesFetched"`
+}
+
+type emailAuthRequest struct {
+	Method      email.AuthMethod `json:"method"`
+	Username    string           `json:"username"`
+	AppPassword string           `json:"appPassword"`
+	OAuthToken  string           `json:"oauthToken"`
+}
+
+type emailMessagesResponse struct {
+	Messages []email.EmailMessage `json:"messages"`
+	SyncedAt *string              `json:"syncedAt,omitempty"`
+}
+
+func emailProviderStateHandler(c echo.Context) error {
+	return respondWithEmailState(c, http.StatusOK)
+}
+
+func emailProviderConfigureHandler(c echo.Context) error {
+	var cfg email.ProviderConfig
+	if err := c.Bind(&cfg); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid configuration payload"})
+	}
+
+	if err := emailService.ConfigureProvider(cfg); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	return respondWithEmailState(c, http.StatusOK)
+}
+
+func emailProviderAuthenticateHandler(c echo.Context) error {
+	var req emailAuthRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid authentication payload"})
+	}
+
+	var secret string
+	switch req.Method {
+	case email.AuthMethodAppPassword:
+		secret = req.AppPassword
+	case email.AuthMethodOAuth:
+		secret = req.OAuthToken
+	default:
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unsupported auth method %q", req.Method)})
+	}
+
+	if secret == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential secret is required"})
+	}
+
+	if _, err := emailService.Authenticate(email.AuthRequest{Method: req.Method, Username: req.Username, Secret: secret}); err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, email.ErrProviderNotConfigured):
+			status = http.StatusBadRequest
+		default:
+			status = http.StatusInternalServerError
+		}
+		return c.JSON(status, map[string]string{"error": err.Error()})
+	}
+
+	return respondWithEmailState(c, http.StatusOK)
+}
+
+func emailFetchMessagesHandler(c echo.Context) error {
+	messages, err := emailService.FetchEmails(c.Request().Context())
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, email.ErrProviderNotConfigured), errors.Is(err, email.ErrProviderNotAuthenticated):
+			status = http.StatusBadRequest
+		case errors.Is(err, context.Canceled):
+			status = http.StatusRequestTimeout
+		}
+		return c.JSON(status, map[string]string{"error": err.Error()})
+	}
+
+	state := emailService.State()
+	var syncedAt *string
+	if !state.LastSync.IsZero() {
+		formatted := state.LastSync.Format(time.RFC3339)
+		syncedAt = &formatted
+	}
+
+	return c.JSON(http.StatusOK, emailMessagesResponse{
+		Messages: messages,
+		SyncedAt: syncedAt,
+	})
+}
+
+func respondWithEmailState(c echo.Context, status int) error {
+	state := emailService.State()
+	var lastSync *string
+	if !state.LastSync.IsZero() {
+		formatted := state.LastSync.Format(time.RFC3339)
+		lastSync = &formatted
+	}
+
+	return c.JSON(status, emailProviderStateResponse{
+		Config:          state.Config,
+		Auth:            state.Auth,
+		LastSync:        lastSync,
+		MessagesFetched: state.MessagesFetched,
+	})
 }
 
 func automationTestRunHandler(c echo.Context) error {
