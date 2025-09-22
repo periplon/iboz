@@ -2,12 +2,9 @@ package email
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -100,50 +97,108 @@ type AuthRequest struct {
 	Secret   string
 }
 
+// AuthRecord stores the authentication metadata alongside the hashed secret.
+type AuthRecord struct {
+	State      AuthState
+	SecretHash string
+}
+
+// Repository defines the persistence contract required by the service.
+type Repository interface {
+	SaveConfig(ctx context.Context, cfg ProviderConfig) error
+	GetConfig(ctx context.Context) (*ProviderConfig, error)
+	ClearAuth(ctx context.Context) error
+	SaveAuth(ctx context.Context, record AuthRecord) error
+	GetAuth(ctx context.Context) (*AuthRecord, error)
+	ClearMessages(ctx context.Context) error
+	SaveMessages(ctx context.Context, messages []EmailMessage, syncedAt time.Time) error
+	GetMessages(ctx context.Context) ([]EmailMessage, time.Time, error)
+}
+
+// SecretHasher abstracts hashing of sensitive credentials.
+type SecretHasher interface {
+	Hash(secret string) (string, error)
+}
+
+// MessageGenerator synthesizes or retrieves messages from a provider.
+type MessageGenerator interface {
+	Generate(ctx context.Context, cfg ProviderConfig, auth AuthState, now time.Time) ([]EmailMessage, error)
+}
+
+// Clock abstracts time retrieval to make the service testable.
+type Clock interface {
+	Now() time.Time
+}
+
+// ProviderService exposes the application behaviour for configuring and fetching provider data.
+type ProviderService interface {
+	ConfigureProvider(ctx context.Context, cfg ProviderConfig) error
+	Authenticate(ctx context.Context, req AuthRequest) (AuthState, error)
+	FetchEmails(ctx context.Context) ([]EmailMessage, error)
+	State(ctx context.Context) (ServiceState, error)
+}
+
+var _ ProviderService = (*Service)(nil)
+
 // Service manages provider configuration, authentication and message retrieval.
 type Service struct {
-	mu       sync.RWMutex
-	config   *ProviderConfig
-	auth     *authRecord
-	cached   []EmailMessage
-	lastSync time.Time
+	repo      Repository
+	hasher    SecretHasher
+	generator MessageGenerator
+	clock     Clock
 }
 
-type authRecord struct {
-	state      AuthState
-	secretHash string
-}
-
-// NewService constructs a fresh Service instance.
-func NewService() *Service {
-	return &Service{}
+// NewService constructs a Service instance with the supplied dependencies.
+func NewService(repo Repository, hasher SecretHasher, generator MessageGenerator, clock Clock) *Service {
+	if repo == nil {
+		panic("email: repository dependency is required")
+	}
+	if hasher == nil {
+		panic("email: secret hasher dependency is required")
+	}
+	if generator == nil {
+		panic("email: message generator dependency is required")
+	}
+	if clock == nil {
+		panic("email: clock dependency is required")
+	}
+	return &Service{repo: repo, hasher: hasher, generator: generator, clock: clock}
 }
 
 // ConfigureProvider validates and stores provider configuration.
-func (s *Service) ConfigureProvider(cfg ProviderConfig) error {
+func (s *Service) ConfigureProvider(ctx context.Context, cfg ProviderConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}
 
 	cleaned := normalizeConfig(cfg)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.config = &cleaned
-	s.auth = nil
-	s.cached = nil
-	s.lastSync = time.Time{}
-
+	if err := s.repo.SaveConfig(ctx, cleaned); err != nil {
+		return err
+	}
+	if err := s.repo.ClearAuth(ctx); err != nil {
+		return err
+	}
+	if err := s.repo.ClearMessages(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
 // Authenticate validates credentials and stores authentication metadata.
-func (s *Service) Authenticate(req AuthRequest) (AuthState, error) {
-	s.mu.RLock()
-	configured := s.config != nil
-	s.mu.RUnlock()
-	if !configured {
+func (s *Service) Authenticate(ctx context.Context, req AuthRequest) (AuthState, error) {
+	if err := ctx.Err(); err != nil {
+		return AuthState{}, err
+	}
+
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return AuthState{}, err
+	}
+	if cfg == nil {
 		return AuthState{}, ErrProviderNotConfigured
 	}
 
@@ -160,14 +215,11 @@ func (s *Service) Authenticate(req AuthRequest) (AuthState, error) {
 		return AuthState{}, errors.New("credential secret must be at least 8 characters")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.config == nil {
-		return AuthState{}, ErrProviderNotConfigured
+	if err := ctx.Err(); err != nil {
+		return AuthState{}, err
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now().UTC()
 	state := AuthState{
 		Method:    req.Method,
 		Username:  req.Username,
@@ -175,63 +227,79 @@ func (s *Service) Authenticate(req AuthRequest) (AuthState, error) {
 		UpdatedAt: now,
 	}
 
-	hash := sha256.Sum256([]byte(req.Secret))
-	record := &authRecord{
-		state:      state,
-		secretHash: hex.EncodeToString(hash[:]),
+	hash, err := s.hasher.Hash(req.Secret)
+	if err != nil {
+		return AuthState{}, err
+	}
+	record := AuthRecord{State: state, SecretHash: hash}
+
+	if err := s.repo.SaveAuth(ctx, record); err != nil {
+		return AuthState{}, err
 	}
 
-	s.auth = record
 	return state, nil
 }
 
-// FetchEmails simulates retrieving a slice of messages from the configured provider.
+// FetchEmails retrieves a slice of messages from the configured provider.
 func (s *Service) FetchEmails(ctx context.Context) ([]EmailMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.config == nil {
-		return nil, ErrProviderNotConfigured
-	}
-	if s.auth == nil {
-		return nil, ErrProviderNotAuthenticated
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	messages := synthesizeMessages(*s.config, s.auth.state, now)
-	s.cached = cloneMessages(messages)
-	s.lastSync = now
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, ErrProviderNotConfigured
+	}
+
+	auth, err := s.repo.GetAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
+		return nil, ErrProviderNotAuthenticated
+	}
+
+	now := s.clock.Now().UTC()
+	messages, err := s.generator.Generate(ctx, *cfg, auth.State, now)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.repo.SaveMessages(ctx, messages, now); err != nil {
+		return nil, err
+	}
 
 	return cloneMessages(messages), nil
 }
 
 // State returns a snapshot of the current service state suitable for JSON encoding.
-func (s *Service) State() ServiceState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var cfg *ProviderConfig
-	if s.config != nil {
-		cloned := *s.config
-		cloned.LabelFilters = append([]string(nil), s.config.LabelFilters...)
-		cfg = &cloned
+func (s *Service) State(ctx context.Context) (ServiceState, error) {
+	if err := ctx.Err(); err != nil {
+		return ServiceState{}, err
 	}
 
-	var auth *AuthState
-	if s.auth != nil {
-		state := s.auth.state
-		auth = &state
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return ServiceState{}, err
+	}
+	auth, err := s.repo.GetAuth(ctx)
+	if err != nil {
+		return ServiceState{}, err
+	}
+	cached, lastSync, err := s.repo.GetMessages(ctx)
+	if err != nil {
+		return ServiceState{}, err
 	}
 
 	return ServiceState{
-		Config:          cfg,
-		Auth:            auth,
-		LastSync:        s.lastSync,
-		MessagesFetched: len(s.cached),
-	}
+		Config:          cloneProviderConfig(cfg),
+		Auth:            cloneAuthState(auth),
+		LastSync:        lastSync,
+		MessagesFetched: len(cached),
+	}, nil
 }
 
 func validateConfig(cfg ProviderConfig) error {
@@ -298,42 +366,6 @@ func normalizeConfig(cfg ProviderConfig) ProviderConfig {
 	return result
 }
 
-func synthesizeMessages(cfg ProviderConfig, auth AuthState, now time.Time) []EmailMessage {
-	baseLabels := append([]string{"INBOX"}, cfg.LabelFilters...)
-
-	summary := EmailMessage{
-		ID:         "msg-schedule",
-		Subject:    fmt.Sprintf("%s focus queue summary", strings.Title(cfg.DisplayName)),
-		Sender:     fmt.Sprintf("notifications@%s", cfg.Provider),
-		ReceivedAt: now.Add(-45 * time.Minute),
-		Snippet:    fmt.Sprintf("Automation insights for %s. 3 urgent items need review.", cfg.DisplayName),
-		Labels:     append([]string(nil), baseLabels...),
-		Importance: "high",
-	}
-
-	escalated := EmailMessage{
-		ID:         "msg-escalation",
-		Subject:    "Escalation: Contract signature pending",
-		Sender:     "legal-ops@example.com",
-		ReceivedAt: now.Add(-2 * time.Hour),
-		Snippet:    fmt.Sprintf("Hi %s, procurement is awaiting countersignature from vendor.", auth.Username),
-		Labels:     append([]string{"Escalations"}, cfg.LabelFilters...),
-		Importance: "high",
-	}
-
-	digest := EmailMessage{
-		ID:         "msg-digest",
-		Subject:    "Daily automation digest",
-		Sender:     "automation-bot@example.com",
-		ReceivedAt: now.Add(-6 * time.Hour),
-		Snippet:    fmt.Sprintf("%d workflows executed, 12 emails triaged automatically.", 4+cfg.SyncWindowHours/24),
-		Labels:     append([]string{"Automation"}, cfg.LabelFilters...),
-		Importance: "normal",
-	}
-
-	return []EmailMessage{summary, escalated, digest}
-}
-
 func cloneMessages(messages []EmailMessage) []EmailMessage {
 	if len(messages) == 0 {
 		return nil
@@ -344,4 +376,21 @@ func cloneMessages(messages []EmailMessage) []EmailMessage {
 		cloned[i].Labels = append([]string(nil), message.Labels...)
 	}
 	return cloned
+}
+
+func cloneProviderConfig(cfg *ProviderConfig) *ProviderConfig {
+	if cfg == nil {
+		return nil
+	}
+	cloned := *cfg
+	cloned.LabelFilters = append([]string(nil), cfg.LabelFilters...)
+	return &cloned
+}
+
+func cloneAuthState(record *AuthRecord) *AuthState {
+	if record == nil {
+		return nil
+	}
+	state := record.State
+	return &state
 }
